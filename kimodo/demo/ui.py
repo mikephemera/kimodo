@@ -78,6 +78,8 @@ def create_gui(
     client: viser.ClientHandle,
     model_name: str,
     model_fps: float,
+    auto_save_dir: str | None = None,
+    auto_save_format: str = "NPZ",
 ):
     """Create GUI elements for a specific client."""
     client_id = client.client_id
@@ -446,6 +448,55 @@ def create_gui(
                     visible="g1" in _model_name,
                 )
 
+            with client.gui.add_folder("Auto-Save", expand_by_default=True):
+                _auto_save_enabled = auto_save_dir is not None
+                gui_auto_save_checkbox = client.gui.add_checkbox(
+                    "Enable Auto-Save",
+                    initial_value=_auto_save_enabled,
+                    hint="Automatically save generated motions to disk after each generation.",
+                )
+                gui_auto_save_dir_text = client.gui.add_text(
+                    "Save Directory",
+                    initial_value=(auto_save_dir or "/mnt/datafiles/Work-syncfree/unitree_sim2x/assets/motions/g1_29dof/kimodo_autosave"),
+                    hint="Directory to save generated motions (created if missing).",
+                )
+                _auto_fmt = auto_save_format or "CSV"
+                _auto_fmt_options = (
+                    ["NPZ", "CSV"]
+                    if "g1" in model_name.lower()
+                    else ["NPZ", "AMASS NPZ"]
+                    if "smplx" in model_name.lower()
+                    else ["NPZ", "BVH"]
+                )
+                if _auto_fmt not in _auto_fmt_options:
+                    _auto_fmt = _auto_fmt_options[0]
+                gui_auto_save_format_dropdown = client.gui.add_dropdown(
+                    "Format",
+                    options=_auto_fmt_options,
+                    initial_value=_auto_fmt,
+                )
+
+                @gui_auto_save_checkbox.on_update
+                def _(event: viser.GuiEvent) -> None:
+                    session = get_active_session(event.client)
+                    if session is None:
+                        return
+                    session.auto_save_enabled = gui_auto_save_checkbox.value
+
+                @gui_auto_save_dir_text.on_update
+                def _(event: viser.GuiEvent) -> None:
+                    session = get_active_session(event.client)
+                    if session is None:
+                        return
+                    session.auto_save_dir = gui_auto_save_dir_text.value
+
+                @gui_auto_save_format_dropdown.on_update
+                def _(event: viser.GuiEvent) -> None:
+                    session = get_active_session(event.client)
+                    if session is None:
+                        return
+                    session.auto_save_format = str(gui_auto_save_format_dropdown.value).upper()
+
             gui_generate_button = client.gui.add_button("Generate", color="green")
         with client.gui.add_folder("Constraints", expand_by_default=False):
             gui_gizmo_space_dropdown = client.gui.add_dropdown(
@@ -801,6 +852,79 @@ def create_gui(
                     save_path = _coerce_save_path(save_path, ext=".npz")
                     save_kimodo_npz(save_path, motion_data)
                 return save_path
+
+            def _auto_save_motions(
+                session: ClientSession,
+                event_client: viser.ClientHandle,
+            ) -> list[str]:
+                """Save all currently displayed motions to the auto-save directory.
+
+                Returns the list of saved file paths.
+                """
+                import datetime
+                import re
+
+                save_dir = session.auto_save_dir or "/mnt/datafiles/Work-syncfree/unitree_sim2x/assets/motions/g1_29dof/kimodo_autosave"
+                fmt = session.auto_save_format or "CSV"
+                os.makedirs(save_dir, exist_ok=True)
+
+                # Build a prompt slug for the filename
+                prompt_values = sorted(
+                    [x for x in session.client.timeline._prompts.values()],
+                    key=lambda x: x.start_frame,
+                )
+                if prompt_values:
+                    raw_slug = prompt_values[0].text[:30].strip()
+                else:
+                    raw_slug = "motion"
+                slug = re.sub(r"[^a-zA-Z0-9]+", "_", raw_slug).strip("_") or "motion"
+
+                timestamp = datetime.datetime.now().strftime("%H%M")
+                saved_paths: list[str] = []
+
+                ext_map = {"NPZ": ".npz", "BVH": ".bvh", "CSV": ".csv", "AMASS NPZ": ".npz"}
+                ext = ext_map.get(fmt, ".npz")
+
+                for idx, (char_name, motion) in enumerate(session.motions.items()):
+                    if len(session.motions) == 1:
+                        base_name = f"{slug}_{timestamp}{ext}"
+                    else:
+                        base_name = f"{slug}_{timestamp}_{idx:02d}{ext}"
+                    save_path = os.path.join(save_dir, base_name)
+
+                    # Avoid overwriting existing files
+                    counter = 1
+                    while os.path.exists(save_path):
+                        stem = os.path.splitext(base_name)[0]
+                        save_path = os.path.join(save_dir, f"{stem}_{counter}{ext}")
+                        counter += 1
+
+                    motion_data = _motion_to_numpy_dict(motion)
+                    if fmt == "BVH":
+                        save_motion_bvh(
+                            save_path,
+                            motion.joints_local_rot,
+                            motion.joints_pos[:, session.skeleton.root_idx, :],
+                            skeleton=session.skeleton,
+                            fps=float(session.model_fps),
+                            standard_tpose=False,
+                        )
+                    elif fmt == "CSV":
+                        data = g1_csv_to_bytes(motion_data, session.skeleton, demo.device)
+                        with open(save_path, "wb") as f:
+                            f.write(data)
+                    elif fmt == "AMASS NPZ":
+                        data = amass_npz_to_bytes(motion_data, session.skeleton, session.model_fps)
+                        with open(save_path, "wb") as f:
+                            f.write(data)
+                    else:
+                        save_kimodo_npz(save_path, motion_data)
+
+                    print(f"[auto-save] Saved motion to {save_path}")
+                    saved_paths.append(save_path)
+
+                print(f"[auto-save] Done: {len(saved_paths)} motion(s) saved to {save_dir}/")
+                return saved_paths
 
             @gui_save_motion_button.on_click
             def _(event: viser.GuiEvent) -> None:
@@ -1350,6 +1474,7 @@ def create_gui(
             def _update_motion_export_dropdown(loaded_model_name: str) -> None:
                 _update_format_dropdown(gui_download_format_dropdown, loaded_model_name)
                 _update_format_dropdown(gui_save_motion_format_dropdown, loaded_model_name)
+                _update_format_dropdown(gui_auto_save_format_dropdown, loaded_model_name)
                 _update_bvh_standard_tpose_visibility()
 
             def _update_bvh_standard_tpose_visibility() -> None:
@@ -2867,6 +2992,33 @@ def create_gui(
                 session.max_frame_idx = int(session.cur_duration * session.model_fps) - 1
                 if session.frame_idx > session.max_frame_idx:
                     session.frame_idx = session.max_frame_idx
+
+                # Auto-save generated motions if enabled
+                if session.auto_save_enabled and session.motions:
+                    try:
+                        saved_paths = _auto_save_motions(session, event_client)
+                        if saved_paths:
+                            dir_name = os.path.basename(session.auto_save_dir or "/mnt/datafiles/Work-syncfree/unitree_sim2x/assets/motions/g1_29dof/kimodo_autosave")
+                            print(f"[auto-save] Client {event_client.client_id}: saved {len(saved_paths)} motion(s) to {session.auto_save_dir}/")
+                            event_client.add_notification(
+                                title="Auto-saved!",
+                                body=f"Saved {len(saved_paths)} motion(s) to {dir_name}/",
+                                auto_close_seconds=5.0,
+                                color="green",
+                            )
+                    except Exception as _e:
+                        import traceback
+                        traceback.print_exc()
+                        print(f"[auto-save] Client {event_client.client_id}: FAILED - {_e}")
+                        try:
+                            event_client.add_notification(
+                                title="Auto-save failed!",
+                                body=str(_e),
+                                auto_close_seconds=10.0,
+                                color="red",
+                            )
+                        except Exception:
+                            pass
 
                 if num_samples > 1:
                     # add mesh selector to choose character to commit

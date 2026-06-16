@@ -57,3 +57,7 @@ class ClientSession:
     edit_mode_snapshot: Optional[dict[int, dict[str, object]]] = None
     undo_drag_snapshot: Optional[dict[str, object]] = None
     show_only_current_constraint: bool = False  # False = Show All, True = Show only Current
+    # Auto-save
+    auto_save_enabled: bool = True
+    auto_save_dir: str = "/mnt/datafiles/Work-syncfree/unitree_sim2x/assets/motions/g1_29dof/kimodo_autosave"
+    auto_save_format: str = "CSV"

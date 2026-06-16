@@ -35,13 +35,17 @@ dependencies = [
 [project.optional-dependencies]
 demo = [
   "viser @ git+https://github.com/nv-tlabs/kimodo-viser.git",
+  "fastapi>=0.100",
+  "uvicorn>=0.23",
 ]
 soma = [
   "py-soma-x @ git+https://github.com/NVlabs/SOMA-X.git"
 ]
 all = [
   "viser @ git+https://github.com/nv-tlabs/kimodo-viser.git",
-  "py-soma-x @ git+https://github.com/NVlabs/SOMA-X.git"
+  "py-soma-x @ git+https://github.com/NVlabs/SOMA-X.git",
+  "fastapi>=0.100",
+  "uvicorn>=0.23",
 ]
 
 [project.scripts]

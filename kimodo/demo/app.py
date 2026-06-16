@@ -10,9 +10,10 @@ from typing import Optional
 
 import numpy as np
 import torch
-
 import viser
-from kimodo.assets import DEMO_ASSETS_ROOT
+from viser.theme import TitlebarButton, TitlebarConfig, TitlebarImage
+
+from kimodo.assets import DEMO_ASSETS_ROOT, PACKAGE_ROOT
 from kimodo.model.load_model import load_model
 from kimodo.model.registry import resolve_model_name
 from kimodo.skeleton import SkeletonBase, SOMASkeleton30
@@ -25,7 +26,6 @@ from kimodo.viz.viser_utils import (
     FullbodyKeyframeSet,
     RootKeyframe2DSet,
 )
-from viser.theme import TitlebarButton, TitlebarConfig, TitlebarImage
 
 from . import generation, ui
 from .config import (
@@ -53,11 +53,20 @@ from .state import ClientSession, ModelBundle
 
 
 class Demo:
-    def __init__(self, default_model_name: str = DEFAULT_MODEL):
+    def __init__(
+        self,
+        default_model_name: str = DEFAULT_MODEL,
+        auto_save_dir: str | None = None,
+        auto_save_format: str = "CSV",
+        headless_host: str = "0.0.0.0",
+        headless_port: int | None = None,
+    ):
         self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
         print(f"Using device: {self.device}")
         self.models: dict[str, ModelBundle] = {}
         self._text_encoder = None
+        self._auto_save_dir = auto_save_dir
+        self._auto_save_format = auto_save_format
         resolved = resolve_model_name(default_model_name, "Kimodo")
         if resolved not in MODEL_NAMES:
             raise ValueError(f"Unknown model '{default_model_name}'. Expected one of: {MODEL_NAMES}")
@@ -102,6 +111,27 @@ class Demo:
 
         # create grid and floor
         self.floor_len = 20.0  # meters
+
+        # Start headless HTTP API if port is configured
+        if headless_port is not None:
+            self._start_headless_api(headless_host, headless_port)
+
+    def _start_headless_api(self, host: str, port: int) -> None:
+        """Start FastAPI server in a daemon thread, sharing this Demo instance."""
+        import threading
+
+        import uvicorn
+
+        from .headless_api import create_app
+
+        app = create_app(self)
+
+        def _serve() -> None:
+            uvicorn.run(app, host=host, port=port, log_level="info")
+
+        t = threading.Thread(target=_serve, daemon=True, name="kimodo-headless-api")
+        t.start()
+        print(f"Headless API listening on http://{host}:{port}")
 
     def ensure_examples_layout(self) -> None:
         os.makedirs(EXAMPLES_ROOT_DIR, exist_ok=True)
@@ -298,6 +328,8 @@ class Demo:
             client=client,
             model_name=self.default_model_name,
             model_fps=model_bundle.model_fps,
+            auto_save_dir=self._auto_save_dir,
+            auto_save_format=self._auto_save_format,
         )
         timeline_data = {
             "tracks": timeline_tracks,
@@ -337,6 +369,12 @@ class Demo:
             gui_examples_dropdown=gui_examples_dropdown,
             gui_save_example_path_text=gui_save_example_path_text,
             gui_model_selector=gui_model_selector,
+            auto_save_enabled=(self._auto_save_dir is not None),
+            auto_save_dir=(
+                self._auto_save_dir
+                or "/mnt/datafiles/Work-syncfree/unitree_sim2x/assets/motions/g1_29dof/kimodo_autosave"
+            ),
+            auto_save_format=(self._auto_save_format or "CSV"),
         )
 
         self.client_sessions[client.client_id] = session
@@ -513,7 +551,7 @@ class Demo:
             if "device-side assert" in str(e) or "CUDA error" in str(e):
                 if self._cuda_healthy:
                     self._cuda_healthy = False
-                    print("FATAL: CUDA context is corrupted (device-side assert). " "The process must be restarted.")
+                    print("FATAL: CUDA context is corrupted (device-side assert). The process must be restarted.")
                     self._trigger_restart()
                 return False
             raise
@@ -658,21 +696,14 @@ class Demo:
                 href="https://github.com/nv-tlabs/kimodo",
             ),
         )
-        assets_dir = DEMO_ASSETS_ROOT
-        logo_light_path = assets_dir / "nvidia_logo.png"
-        logo_dark_path = assets_dir / "nvidia_logo_dark.png"
-        if logo_light_path.exists():
-            light_b64 = base64.standard_b64encode(logo_light_path.read_bytes()).decode("ascii")
-            dark_b64 = (
-                base64.standard_b64encode(logo_dark_path.read_bytes()).decode("ascii")
-                if logo_dark_path.exists()
-                else None
-            )
+        logo_path = PACKAGE_ROOT.parent / "kimodo-viser" / "mthreads.png"
+        if logo_path.exists():
+            logo_b64 = base64.standard_b64encode(logo_path.read_bytes()).decode("ascii")
             image = TitlebarImage(
-                image_url_light=f"data:image/png;base64,{light_b64}",
-                image_url_dark=(f"data:image/png;base64,{dark_b64}" if dark_b64 else None),
-                image_alt="NVIDIA",
-                href="https://www.nvidia.com/",
+                image_url_light=f"data:image/png;base64,{logo_b64}",
+                image_url_dark=None,
+                image_alt="MTHREADS",
+                href=None,
             )
         else:
             image = None

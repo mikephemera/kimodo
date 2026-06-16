@@ -146,7 +146,8 @@ for _key, _repo_id in MODEL_NAMES.items():
                 FRIENDLY_NAMES[_key] = _info.display_name
                 break
 
-DEFAULT_MODEL = "kimodo-soma-rp"
+# DEFAULT_MODEL = "kimodo-soma-rp"
+DEFAULT_MODEL = "kimodo-g1-rp"
 DEFAULT_TEXT_ENCODER_URL = "http://127.0.0.1:9550/"
 
 # Friendly names for skeleton dropdown (key -> label).
